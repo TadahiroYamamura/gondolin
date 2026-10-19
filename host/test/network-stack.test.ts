@@ -2092,3 +2092,87 @@ test("network-stack: session closed by upstream first stays until the guest's FI
   );
   assert.equal((stack as any).natTable.has(key), false);
 });
+
+for (const finInOnTcpClose of [false, true]) {
+  test(`network-stack: simultaneous close keeps the session until the guest ACKs our FIN${finInOnTcpClose ? " (FIN sent from onTcpClose)" : ""}`, () => {
+    const gatewayMac = mac([0x5a, 0x94, 0xef, 0xe4, 0x0c, 0xdd]);
+    const vmMac = mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
+
+    let key = "";
+    let stack: NetworkStack;
+    stack = new NetworkStack({
+      gatewayMac,
+      vmMac,
+      dnsServers: ["8.8.8.8"],
+      callbacks: {
+        onUdpSend: () => {},
+        onTcpConnect: (m) => {
+          key = m.key;
+          return { allowRawTcp: true };
+        },
+        onTcpSend: () => {},
+        onTcpClose: (m) => {
+          if (finInOnTcpClose) {
+            stack.handleTcpEnd({ key: m.key });
+          }
+        },
+        onTcpPause: () => {},
+        onTcpResume: () => {},
+      },
+    });
+
+    const srcIP = ip([192, 168, 127, 3]);
+    const dstIP = ip([198, 19, 0, 10]);
+    const srcPort = 40032;
+    const dstPort = 7000;
+
+    stack.handleTCP(
+      buildTcpSegment({ srcPort, dstPort, seq: 100, ack: 0, flags: 0x02 }),
+      srcIP,
+      dstIP,
+    );
+    stack.handleTcpConnected({ key });
+    const hostSeq = (stack as any).natTable.get(key).mySeq as number;
+    stack.handleTCP(
+      buildTcpSegment({
+        srcPort,
+        dstPort,
+        seq: 101,
+        ack: hostSeq,
+        flags: 0x10,
+      }),
+      srcIP,
+      dstIP,
+    );
+
+    if (!finInOnTcpClose) {
+      stack.handleTcpEnd({ key });
+    }
+    // The guest's FIN crosses ours and does not ACK it
+    stack.handleTCP(
+      buildTcpSegment({
+        srcPort,
+        dstPort,
+        seq: 101,
+        ack: hostSeq,
+        flags: 0x11,
+      }),
+      srcIP,
+      dstIP,
+    );
+    assert.equal((stack as any).natTable.get(key)?.mySeq, hostSeq + 1);
+
+    stack.handleTCP(
+      buildTcpSegment({
+        srcPort,
+        dstPort,
+        seq: 102,
+        ack: hostSeq + 1,
+        flags: 0x10,
+      }),
+      srcIP,
+      dstIP,
+    );
+    assert.equal((stack as any).natTable.has(key), false);
+  });
+}

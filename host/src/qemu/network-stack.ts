@@ -1022,12 +1022,15 @@ export class NetworkStack extends EventEmitter {
         session.myAck,
         0x10,
       );
-      if (
-        session.state === "CLOSED_BY_REMOTE" ||
-        session.state === "FIN_WAIT"
-      ) {
+      if (session.state === "CLOSED_BY_REMOTE") {
         this.clearPauseState(key);
         this.natTable.delete(key);
+      } else if (session.state === "FIN_WAIT") {
+        // CLOSING: while our FIN is unacked, the ACK handler drops the session
+        if (session.finSent && session.vmAck === session.mySeq) {
+          this.clearPauseState(key);
+          this.natTable.delete(key);
+        }
       } else {
         session.state = "FIN_SENT";
       }
